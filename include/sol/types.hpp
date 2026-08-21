@@ -352,6 +352,10 @@ namespace sol {
 	struct as_table_t : private detail::ebco<T> {
 	private:
 		using base_t = detail::ebco<T>;
+		// when T is a mutable lvalue reference, ebco<T&>'s constructor
+		// takes a plain T&, which const/move value constructors cannot
+		// feed: route construction through the forwarding constructor instead
+		static constexpr bool sl_value_ctors_enabled = !(std::is_lvalue_reference_v<T> && !std::is_const_v<std::remove_reference_t<T>>);
 
 	public:
 		as_table_t() = default;
@@ -359,13 +363,16 @@ namespace sol {
 		as_table_t(as_table_t&&) = default;
 		as_table_t& operator=(const as_table_t&) = default;
 		as_table_t& operator=(as_table_t&&) = default;
+		template <bool B = sl_value_ctors_enabled, std::enable_if_t<B>* = nullptr>
 		as_table_t(const meta::unqualified_t<T>& obj) noexcept(std::is_nothrow_constructible_v<base_t, const meta::unqualified_t<T>&>) : base_t(obj) {
 		}
+		template <bool B = sl_value_ctors_enabled, std::enable_if_t<B>* = nullptr>
 		as_table_t(meta::unqualified_t<T>&& obj) noexcept(std::is_nothrow_constructible_v<base_t, meta::unqualified_t<T>&&>) : base_t(std::move(obj)) {
 		}
 		template <typename Arg, typename... Args,
-		     std::enable_if_t<
-		          !std::is_same_v<as_table_t, meta::unqualified_t<Arg>> && !std::is_same_v<meta::unqualified_t<T>, meta::unqualified_t<Arg>>>* = nullptr>
+		     std::enable_if_t<!std::is_same_v<as_table_t, meta::unqualified_t<Arg>>
+		          && (!std::is_same_v<meta::unqualified_t<T>, meta::unqualified_t<Arg>> || !sl_value_ctors_enabled)
+		          && (sizeof...(Args) > 0 || !sl_value_ctors_enabled || !std::is_convertible_v<Arg, T>)>* = nullptr>
 		as_table_t(Arg&& arg, Args&&... args) noexcept(std::is_nothrow_constructible_v<base_t, Arg, Args...>)
 		: base_t(std::forward<Arg>(arg), std::forward<Args>(args)...) {
 		}
@@ -385,6 +392,10 @@ namespace sol {
 	struct nested : private detail::ebco<T> {
 	private:
 		using base_t = detail::ebco<T>;
+		// when T is a mutable lvalue reference, ebco<T&>'s constructor
+		// takes a plain T&, which const/move value constructors cannot
+		// feed: route construction through the forwarding constructor instead
+		static constexpr bool sl_value_ctors_enabled = !(std::is_lvalue_reference_v<T> && !std::is_const_v<std::remove_reference_t<T>>);
 
 	public:
 		using nested_type = T;
@@ -394,13 +405,16 @@ namespace sol {
 		nested(nested&&) = default;
 		nested& operator=(const nested&) = default;
 		nested& operator=(nested&&) = default;
+		template <bool B = sl_value_ctors_enabled, std::enable_if_t<B>* = nullptr>
 		nested(const meta::unqualified_t<T>& obj) noexcept(std::is_nothrow_constructible_v<base_t, const meta::unqualified_t<T>&>) : base_t(obj) {
 		}
+		template <bool B = sl_value_ctors_enabled, std::enable_if_t<B>* = nullptr>
 		nested(meta::unqualified_t<T>&& obj) noexcept(std::is_nothrow_constructible_v<base_t, meta::unqualified_t<T>&&>) : base_t(std::move(obj)) {
 		}
 		template <typename Arg, typename... Args,
-		     std::enable_if_t<
-		          !std::is_same_v<nested, meta::unqualified_t<Arg>> && !std::is_same_v<meta::unqualified_t<T>, meta::unqualified_t<Arg>>>* = nullptr>
+		     std::enable_if_t<!std::is_same_v<nested, meta::unqualified_t<Arg>>
+		          && (!std::is_same_v<meta::unqualified_t<T>, meta::unqualified_t<Arg>> || !sl_value_ctors_enabled)
+		          && (sizeof...(Args) > 0 || !sl_value_ctors_enabled || !std::is_convertible_v<Arg, T>)>* = nullptr>
 		nested(Arg&& arg, Args&&... args) noexcept(std::is_nothrow_constructible_v<base_t, Arg, Args...>)
 		: base_t(std::forward<Arg>(arg), std::forward<Args>(args)...) {
 		}

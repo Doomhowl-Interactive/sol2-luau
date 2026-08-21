@@ -4,21 +4,33 @@
 #include <stddef.h>
 #include <limits.h>
 #include <string.h>
+#if __has_include(<lua/lua.h>)
+  #include <lua/lua.h>
+#else
+  #include <lua.h>
+#endif
+/* Luau defines LUA_VECTOR_SIZE in its luaconf.h, and no other Lua
+* implementation does. It is not a Lua 5.x release: none of the compat
+* shims below apply to it, and it has no lauxlib.h of its own, so
+* including a foreign lauxlib.h here would clash with Luau's own
+* declarations. Bail out early, leaving this header empty for Luau. */
+#if !defined(LUA_VECTOR_SIZE)
 #if defined(__cplusplus) && !defined(COMPAT53_LUA_CPP)
 extern "C" {
 #endif
 #if __has_include(<lua/lua.h>)
-  #include <lua/lua.h>
   #include <lua/lauxlib.h>
   #include <lua/lualib.h>
 #else
-  #include <lua.h>
   #include <lauxlib.h>
   #include <lualib.h>
 #endif
 #if defined(__cplusplus) && !defined(COMPAT53_LUA_CPP)
 }
 #endif
+#endif // Luau detection
+
+#if !defined(LUA_VECTOR_SIZE) // everything below is skipped entirely for Luau
 
 #ifndef COMPAT53_PREFIX
 /* we chose this name because many other lua bindings / libs have
@@ -424,6 +436,8 @@ COMPAT53_API void luaL_requiref(lua_State *L, const char *modname,
 #if defined(COMPAT53_INCLUDE_SOURCE) && COMPAT53_INCLUDE_SOURCE == 1
 #  include "compat-5.3.c.h"
 #endif
+
+#endif // everything below is skipped entirely for Luau
 
 
 #endif /* KEPLER_PROJECT_COMPAT53_H_ */

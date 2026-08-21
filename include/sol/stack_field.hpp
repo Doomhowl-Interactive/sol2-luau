@@ -63,6 +63,26 @@ namespace sol { namespace stack {
 			;
 	} // namespace stack_detail
 
+	namespace stack_detail {
+		// Luau implements lua_getglobal/lua_setglobal as macros around
+		// lua_getfield/lua_setfield: passing &key[0] directly into the
+		// expansion trips GCC's array-bounds analysis into reporting
+		// bogus out-of-bounds accesses on merged string literals.
+		// Route the key through a real function call to keep the
+		// optimizer honest.
+		template <typename Key>
+		const char* c_str_key(Key&& key) {
+#if SOL_IS_ON(SOL_COMPILER_GCC)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+		return &(key)[0];
+#pragma GCC diagnostic pop
+#else
+		return &(key)[0];
+#endif
+		}
+	} // namespace stack_detail
+
 	template <typename T, bool global, bool raw, typename>
 	struct field_getter {
 		static inline constexpr int default_table_index
@@ -110,10 +130,10 @@ namespace sol { namespace stack {
 				if constexpr (meta::is_c_str_or_string_v<T>) {
 					if constexpr (global) {
 						(void)tableindex;
-						lua_getglobal(L, &key[0]);
+						lua_getglobal(L, stack_detail::c_str_key(key));
 					}
 					else {
-						lua_getfield(L, tableindex, &key[0]);
+						lua_getfield(L, tableindex, stack_detail::c_str_key(key));
 					}
 				}
 				else if constexpr (std::is_same_v<T, meta_function>) {
@@ -215,12 +235,12 @@ namespace sol { namespace stack {
 				if constexpr (meta::is_c_str_or_string_v<T>) {
 					if constexpr (global) {
 						push(L, std::forward<Value>(value));
-						lua_setglobal(L, &key[0]);
+						lua_setglobal(L, stack_detail::c_str_key(key));
 						(void)tableindex;
 					}
 					else {
 						push(L, std::forward<Value>(value));
-						lua_setfield(L, tableindex, &key[0]);
+						lua_setfield(L, tableindex, stack_detail::c_str_key(key));
 					}
 				}
 #if SOL_LUA_VERSION_I_ >= 503

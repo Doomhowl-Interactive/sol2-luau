@@ -122,6 +122,11 @@ namespace sol {
 			static_assert(meta::all_same<lib, meta::unqualified_t<Args>...>::value, "all types must be libraries");
 			if constexpr (sizeof...(args) == 0) {
 				luaL_openlibs(L);
+#if SOL_IS_ON(SOL_USE_LUAU)
+				// Luau's base library lacks `collectgarbage` and a
+				// runtime `require`: add sol2's shims for them
+				sol_luau_open_base_extras(L);
+#endif
 				return;
 			}
 			else {
@@ -140,6 +145,9 @@ namespace sol {
 					case lib::base:
 						luaL_requiref(L, "base", luaopen_base, 1);
 						lua_pop(L, 1);
+						// Luau's base library lacks `collectgarbage` and a
+						// runtime `require`: add sol2's shims for them
+						sol_luau_open_base_extras(L);
 						break;
 					case lib::coroutine:
 						luaL_requiref(L, "coroutine", luaopen_coroutine, 1);

@@ -35,6 +35,51 @@ int dump_always_fail(lua_State*, const void*, size_t, void*) {
 	return dump_always_fail_number;
 }
 
+#if SOL_IS_ON(SOL_USE_LUAU)
+// Luau has no way to serialize an existing closure back into bytecode:
+// bytecode is only ever produced by compiling source code. sol2's
+// `dump` therefore always reports an error on Luau, and these tests
+// (which exercise bytecode dump/transfer round-trips) do not apply.
+TEST_CASE("dump/dump transfer", "dumping functions is not supported on Luau") {
+	SECTION("safe") {
+		sol::state lua;
+		sol::load_result lr = lua.load("a = function (v) print(v) return v end");
+		REQUIRE(lr.valid());
+		sol::protected_function target = lr.get<sol::protected_function>();
+		REQUIRE_THROWS_AS(target.dump(), sol::dump_error);
+	}
+	SECTION("unsafe") {
+		sol::state lua;
+		sol::load_result lr = lua.load("a = function (v) print(v) return v end");
+		REQUIRE(lr.valid());
+		sol::unsafe_function target = lr;
+		// the unsafe flavor of dump panics through luaL_error, which is
+		// a proper C++ exception on Luau
+		REQUIRE_THROWS(target.dump());
+	}
+}
+
+TEST_CASE("dump/failure", "test that failure is properly propagated") {
+	SECTION("safe") {
+		sol::state lua;
+		sol::load_result lr = lua.load("a = function (v) print(v) return v end");
+		REQUIRE(lr.valid());
+		sol::protected_function target = lr.get<sol::protected_function>();
+		int err = target.dump(&dump_always_fail, nullptr, false, sol::dump_pass_on_error);
+		REQUIRE(err == dump_always_fail_number);
+	}
+	SECTION("unsafe") {
+		sol::state lua;
+		sol::load_result lr = lua.load("a = function (v) print(v) return v end");
+		REQUIRE(lr.valid());
+		sol::unsafe_function target = lr;
+		int err = target.dump(&dump_always_fail, nullptr, false, sol::dump_pass_on_error);
+		REQUIRE(err == dump_always_fail_number);
+	}
+}
+
+#else
+
 TEST_CASE("dump/dump transfer", "test that a function can be transferred from one place to another") {
 	SECTION("safe") {
 		sol::state lua;
@@ -119,3 +164,5 @@ TEST_CASE("dump/different containers", "test that dump inserter works for variou
 		REQUIRE(std::equal(bytecode_dump.cbegin(), bytecode_dump.cend(), deque_dump.cbegin(), deque_dump.cend()));
 	}
 }
+
+#endif // Luau dump tests vs. every other Lua implementation

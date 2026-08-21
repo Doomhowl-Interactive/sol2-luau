@@ -120,7 +120,10 @@ namespace sol { namespace function_detail {
 		: var(std::move(v)), member(std::forward<Args>(args)...) {
 		}
 
-		static int call(lua_State* L, member_variable& self) noexcept(std::is_nothrow_copy_assignable_v<T>) {
+		// luaL_error raises a proper C++ exception when the underlying
+		// VM propagates exceptions (e.g., Luau): these functions must not
+		// be noexcept in that case, or raising an error will std::terminate
+		static int call(lua_State* L, member_variable& self) noexcept(SOL_IS_OFF(SOL_PROPAGATE_EXCEPTIONS)&& std::is_nothrow_copy_assignable_v<T>) {
 			int nr;
 			{
 				M mem = detail::unwrap(detail::deref(self.member));
@@ -144,7 +147,7 @@ namespace sol { namespace function_detail {
 			}
 		}
 
-		int operator()(lua_State* L) noexcept(std::is_nothrow_copy_assignable_v<T>) {
+		int operator()(lua_State* L) noexcept(SOL_IS_OFF(SOL_PROPAGATE_EXCEPTIONS)&& std::is_nothrow_copy_assignable_v<T>) {
 			if constexpr (no_trampoline) {
 				return call(L, *this);
 			}

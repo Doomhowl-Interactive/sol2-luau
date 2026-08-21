@@ -191,11 +191,13 @@ namespace sol {
 				     "a reference and std::move it manually if this was your intention.");
 				argument_handler<types<R, Args...>> handler {};
 				record tracking {};
-#if SOL_IS_OFF(SOL_PROPAGATE_EXCEPTIONS)
+				// we always pre-check our arguments, even when exceptions
+				// can propagate through the VM: relying on lazy per-argument
+				// checks during evaluation silently skips type checking
+				// entirely for unchecked_get-style conversions
 				if constexpr (checkargs) {
 					multi_check<Args...>(L_, start_index_, handler);
 				}
-#endif
 				if constexpr (std::is_void_v<R>) {
 					eval<checkargs>(
 					     argument_types_, argument_indices_, L_, start_index_, handler, tracking, std::forward<Fx>(fx_), std::forward<FxArgs>(args_)...);

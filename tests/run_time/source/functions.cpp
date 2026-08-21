@@ -766,7 +766,7 @@ TEST_CASE("advanced/get and call", "Checks for lambdas returning values after a 
 	REQUIRE((lua.get<sol::function>("j").call<int, float, double, std::string>() == heh_tuple));
 }
 
-TEST_CASE("advanced/operator[] call", "Checks for lambdas returning values using operator[]") {
+TEST_CASE("advanced/operator indexing call", "Checks for lambdas returning values using operator indexing") {
 	const static std::string lol = "lol", str = "str";
 	const static std::tuple<int, float, double, std::string> heh_tuple = std::make_tuple(1, 6.28f, 3.14, std::string("heh"));
 	sol::state lua;

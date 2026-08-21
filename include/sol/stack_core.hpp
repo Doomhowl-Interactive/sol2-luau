@@ -253,9 +253,40 @@ namespace sol {
 			return static_cast<T**>(adjusted);
 		}
 
+#if SOL_IS_ON(SOL_USE_LUAU)
+		// native (stack-free) flavors of the destroyers above: Luau runs
+		// userdata destructors straight from its collector with no usable
+		// Lua stack, so these are recorded in the userdata header by the
+		// allocation functions and invoked through sol2's Luau bridge
+		template <typename T>
+		void luau_destroy_usertype(void* payload) noexcept {
+			void* memory = align_usertype_pointer(payload);
+			T** pdata = static_cast<T**>(memory);
+			std::allocator<T> alloc;
+			std::allocator_traits<std::allocator<T>>::destroy(alloc, *pdata);
+		}
+
+		template <typename T>
+		void luau_destroy_unique(void* payload) noexcept {
+			void* memory = align_usertype_unique_destructor(payload);
+			unique_destructor& dx = *static_cast<unique_destructor*>(memory);
+			memory = align_usertype_unique_tag<true>(memory);
+			(dx)(memory);
+		}
+
+		template <typename T>
+		void luau_destroy_user(void* payload) noexcept {
+			void* aligned_memory = align_user<T>(payload);
+			T* typed_memory = static_cast<T*>(aligned_memory);
+			std::allocator<T> alloc;
+			std::allocator_traits<std::allocator<T>>::destroy(alloc, typed_memory);
+		}
+#endif // Luau native userdata destruction
+
 		inline bool attempt_alloc(lua_State* L, std::size_t ptr_align, std::size_t ptr_size, std::size_t value_align,
-		     std::size_t allocated_size, void*& pointer_adjusted, void*& data_adjusted) {
+		     std::size_t allocated_size, void*& pointer_adjusted, void*& data_adjusted, void*& raw_block) {
 			void* adjusted = alloc_newuserdata(L, allocated_size);
+			raw_block = adjusted;
 			pointer_adjusted = align(ptr_align, adjusted, allocated_size);
 			if (pointer_adjusted == nullptr) {
 				lua_pop(L, 1);
@@ -273,8 +304,9 @@ namespace sol {
 		}
 
 		inline bool attempt_alloc_unique(lua_State* L, std::size_t ptr_align, std::size_t ptr_size, std::size_t real_align,
-		     std::size_t allocated_size, void*& pointer_adjusted, void*& dx_adjusted, void*& id_adjusted, void*& data_adjusted) {
+		     std::size_t allocated_size, void*& pointer_adjusted, void*& dx_adjusted, void*& id_adjusted, void*& data_adjusted, void*& raw_block) {
 			void* adjusted = alloc_newuserdata(L, allocated_size);
+			raw_block = adjusted;
 			pointer_adjusted = align(ptr_align, adjusted, allocated_size);
 			if (pointer_adjusted == nullptr) {
 				lua_pop(L, 1);
@@ -323,6 +355,11 @@ namespace sol {
 				T*& pointerreference = *pointerpointer;
 				T* allocationtarget = reinterpret_cast<T*>(pointerpointer + 1);
 				pointerreference = allocationtarget;
+#if SOL_IS_ON(SOL_USE_LUAU)
+				if constexpr (std::is_destructible_v<T>) {
+					sol_luau_compat::set_userdata_gc(static_cast<void*>(pointerpointer), &luau_destroy_usertype<T>);
+				}
+#endif
 				return allocationtarget;
 			}
 
@@ -330,8 +367,9 @@ namespace sol {
 
 			void* pointer_adjusted;
 			void* data_adjusted;
+			void* raw_block;
 			bool result
-			     = attempt_alloc(L, std::alignment_of_v<T*>, sizeof(T*), std::alignment_of_v<T>, initial_size, pointer_adjusted, data_adjusted);
+			     = attempt_alloc(L, std::alignment_of_v<T*>, sizeof(T*), std::alignment_of_v<T>, initial_size, pointer_adjusted, data_adjusted, raw_block);
 			if (!result) {
 				if (pointer_adjusted == nullptr) {
 					luaL_error(L, "aligned allocation of userdata block (pointer section) for '%s' failed", detail::demangle<T>().c_str());
@@ -346,6 +384,11 @@ namespace sol {
 			T*& pointerreference = *pointerpointer;
 			T* allocationtarget = reinterpret_cast<T*>(data_adjusted);
 			pointerreference = allocationtarget;
+#if SOL_IS_ON(SOL_USE_LUAU)
+			if constexpr (std::is_destructible_v<T>) {
+				sol_luau_compat::set_userdata_gc(raw_block, &luau_destroy_usertype<T>);
+			}
+#endif
 			return allocationtarget;
 		}
 
@@ -365,6 +408,9 @@ namespace sol {
 				dx = static_cast<detail::unique_destructor*>(static_cast<void*>(pref + 1));
 				id = static_cast<unique_tag*>(static_cast<void*>(dx + 1));
 				Real* mem = static_cast<Real*>(static_cast<void*>(id + 1));
+#if SOL_IS_ON(SOL_USE_LUAU)
+				sol_luau_compat::set_userdata_gc(static_cast<void*>(pref), &luau_destroy_unique<T>);
+#endif
 				return mem;
 			}
 
@@ -374,6 +420,7 @@ namespace sol {
 			void* dx_adjusted = nullptr;
 			void* id_adjusted = nullptr;
 			void* data_adjusted = nullptr;
+			void* raw_block = nullptr;
 			bool result = attempt_alloc_unique(L,
 			     std::alignment_of_v<T*>,
 			     sizeof(T*),
@@ -382,7 +429,8 @@ namespace sol {
 			     pointer_adjusted,
 			     dx_adjusted,
 			     id_adjusted,
-			     data_adjusted);
+			     data_adjusted,
+			     raw_block);
 			if (!result) {
 				if (pointer_adjusted == nullptr) {
 					luaL_error(L, "aligned allocation of userdata block (pointer section) for '%s' failed", detail::demangle<T>().c_str());
@@ -400,6 +448,9 @@ namespace sol {
 			dx = static_cast<detail::unique_destructor*>(dx_adjusted);
 			id = static_cast<unique_tag*>(id_adjusted);
 			Real* mem = static_cast<Real*>(data_adjusted);
+#if SOL_IS_ON(SOL_USE_LUAU)
+			sol_luau_compat::set_userdata_gc(raw_block, &luau_destroy_unique<T>);
+#endif
 			return mem;
 		}
 
@@ -415,6 +466,11 @@ namespace sol {
 			     use_align;
 			if (!use_align::value) {
 				T* pointer = static_cast<T*>(alloc_newuserdata(L, sizeof(T)));
+#if SOL_IS_ON(SOL_USE_LUAU)
+				if constexpr (std::is_destructible_v<T>) {
+					sol_luau_compat::set_userdata_gc(static_cast<void*>(pointer), &luau_destroy_user<T>);
+				}
+#endif
 				return pointer;
 			}
 
@@ -427,6 +483,11 @@ namespace sol {
 				lua_pop(L, 1);
 				luaL_error(L, "cannot properly align memory for '%s'", detail::demangle<T>().data());
 			}
+#if SOL_IS_ON(SOL_USE_LUAU)
+			if constexpr (std::is_destructible_v<T>) {
+				sol_luau_compat::set_userdata_gc(unadjusted, &luau_destroy_user<T>);
+			}
+#endif
 			return static_cast<T*>(adjusted);
 		}
 
@@ -460,6 +521,8 @@ namespace sol {
 			std::allocator_traits<std::allocator<T>>::destroy(alloc, typed_memory);
 			return 0;
 		}
+
+
 
 		template <typename T, typename Real>
 		void usertype_unique_alloc_destroy(void* memory) {

@@ -36,7 +36,20 @@
 //   * no `lua_copy`/`lua_rotate`/`lua_len`/`lua_geti`/`lua_seti`/
 //     `lua_pushglobaltable`/`lua_newuserdatauv`: emulated with 5.1-style calls
 //   * userdata have no per-object environment: `lua_getuservalue`/
-//     `lua_setuservalue` fall back to a weak-keyed registry table
+//     `lua_setuservalue` keep values alive via a registry reference
+//   * the global `pairs` function requires a real table (Luau is strictly
+//     5.1-flavored here and does not honor __pairs): iterating sol2's
+//     container userdata from Lua script through pairs() is therefore
+//     not available; use sol2's C++-side iteration instead
+//   * userdata memory is released through Luau's per-tag C destructors:
+//     sol2's allocators record a native destructor for each block (see
+//     stack_core.hpp), which the bridge below runs at collection time.
+//     NOTE that custom destructors bound through `sol::destructor` /
+//     the `__gc` metamethod cannot be honored this way: they expect a
+//     real userdata argument with metatable identity, which cannot be
+//     fabricated while the collector is running. The underlying C++
+//     object is still destroyed correctly; only the user-supplied
+//     destructor callback is skipped
 //   * no `lua_atpanic`: routed through `lua_callbacks(L)->panic`
 //   * no source-loading API (`lua_load`, `luaL_loadbufferx`,
 //     `luaL_loadfilex`): source is compiled with `Luau::compile` from
@@ -105,6 +118,83 @@ inline int luaL_error(lua_State* L, const char* fmt, Args&&... args) {
 	return 0;
 }
 
+// // // userdata allocation and destruction
+//
+// Luau has no __gc metamethod: userdata memory is released through per-tag
+// C destructors registered with lua_setuserdatadtor. sol2 allocates its
+// userdata through the shim below, which prepends a small header to every
+// block: sol2's allocators then record a native destructor for the payload
+// in that header (see stack_core.hpp), and a single Luau destructor
+// callback runs it when the object is collected.
+
+namespace sol_luau_compat {
+	// keep this a multiple of 16 so the payload handed to sol2 stays
+	// maximally aligned just like a plain lua_newuserdata block would be
+	typedef struct userdata_header {
+		// native destructor for the payload: never touches the Lua
+		// stack, so it is safe to call from the collector at any point.
+		// Only valid once a metatable has been attached (see
+		// sol_luau_setmetatable): standard Lua only ever runs __gc for
+		// userdata that carry one, and sol2 relies on that for
+		// userdata whose construction never completed
+		void (*gc)(void*);
+		// the destroyer recorded at allocation time, promoted to gc
+		// when a metatable gets attached
+		void (*pending_gc)(void*);
+		// registry reference keeping this userdata's uservalue alive
+		int uv_ref;
+		int padding;
+	} userdata_header;
+
+	inline int userdata_tag() {
+		return 1;
+	}
+
+	template <typename Fx>
+	inline void set_userdata_gc(void* payload_base, Fx&& fx) {
+		userdata_header* header = static_cast<userdata_header*>(payload_base) - 1;
+		header->pending_gc = fx;
+	}
+
+	// defined below, once exception-handling shims are in place
+	void gc_bridge(lua_State* L, void* userdata);
+} // namespace sol_luau_compat
+
+// both allocation entry points must route through the same shim:
+// sol2 picks between them based on its (5.1-flavored) version macros
+inline void* sol_luau_newuserdata(lua_State* L, size_t sz) {
+	if (lua_getuserdatadtor(L, sol_luau_compat::userdata_tag()) == nullptr) {
+		lua_setuserdatadtor(L, sol_luau_compat::userdata_tag(), &sol_luau_compat::gc_bridge);
+	}
+	void* block = lua_newuserdata(L, sz + sizeof(sol_luau_compat::userdata_header));
+	if (block == nullptr) {
+		return nullptr;
+	}
+	sol_luau_compat::userdata_header* header = static_cast<sol_luau_compat::userdata_header*>(block);
+	header->gc = nullptr;
+	header->pending_gc = nullptr;
+	header->uv_ref = LUA_NOREF;
+	header->padding = 0;
+	lua_setuserdatatag(L, -1, sol_luau_compat::userdata_tag());
+	return static_cast<void*>(header + 1);
+}
+
+// the allocation shim hands out a payload pointer that sits past the
+// header: adjust lua_touserdata for our tagged blocks so that the
+// "what you allocated is what you get back" invariant sol2 relies on
+// stays intact (light userdata and foreign userdata pass through as-is)
+inline void* sol_luau_touserdata(lua_State* L, int idx) {
+	void* p = lua_touserdata(L, idx);
+	if (p != nullptr && lua_type(L, idx) == LUA_TUSERDATA && lua_userdatatag(L, idx) == sol_luau_compat::userdata_tag()) {
+		return static_cast<void*>(static_cast<sol_luau_compat::userdata_header*>(p) + 1);
+	}
+	return p;
+}
+
+#define lua_newuserdata(L, size) sol_luau_newuserdata((L), (size))
+#define lua_newuserdatauv(L, size, nuv) sol_luau_newuserdata((L), (size))
+#define lua_touserdata(L, index) sol_luau_touserdata((L), (index))
+
 // Luau has no io library and therefore no stream userdata type,
 // but sol2's FILE* support references this type unconditionally
 #ifndef LUA_FILEHANDLE
@@ -117,7 +207,6 @@ typedef struct luaL_Stream {
 namespace sol_luau_compat {
 	// unique addresses used as registry keys
 	static const char ref_table_key = '0';
-	static const char uservalue_table_key = '0';
 	static const char panic_function_key = '0';
 
 	// the level most recently "selected" by lua_getstack, so that the
@@ -226,6 +315,13 @@ inline void lua_rotate(lua_State* L, int idx, int n) {
 inline int lua_compare(lua_State* L, int idx1, int idx2, int op) {
 	switch (op) {
 	case LUA_OPEQ:
+		// unlike standard Lua, Luau's lua_equal will invoke a __eq
+		// metamethod even when both operands are the exact same
+		// object (e.g., one and the same table): short-circuit
+		// identity here first to keep standard Lua semantics
+		if (lua_rawequal(L, idx1, idx2) == 1) {
+			return 1;
+		}
 		return lua_equal(L, idx1, idx2);
 	case LUA_OPLT:
 		return lua_lessthan(L, idx1, idx2);
@@ -257,40 +353,76 @@ inline void lua_seti(lua_State* L, int index, lua_Integer i) {
 	lua_settable(L, index);
 }
 
+// like luaL_checkudata, but returns nullptr instead of raising an error
+// (Luau ships luaL_checkudata but not luaL_testudata)
+inline void* luaL_testudata(lua_State* L, int ud, const char* tname) {
+	void* p = lua_touserdata(L, ud);
+	if (p == nullptr) {
+		return nullptr;
+	}
+	if (lua_getmetatable(L, ud) == 0) {
+		return nullptr;
+	}
+	luaL_getmetatable(L, tname);
+	int same = lua_rawequal(L, -1, -2);
+	lua_pop(L, 2);
+	return same ? p : nullptr;
+}
+
 inline int lua_isinteger(lua_State* L, int idx) {
 	// only true for values stored with the dedicated integer type
 	return lua_type(L, idx) == LUA_TINTEGER;
 }
 
-inline void* lua_newuserdatauv(lua_State* L, size_t sz, int nuv) {
-	(void)nuv;
-	return lua_newuserdata(L, sz);
+namespace sol_luau_compat {
+	inline void gc_bridge(lua_State* L, void* userdata) {
+		userdata_header* header = static_cast<userdata_header*>(userdata);
+		void* payload = static_cast<void*>(header + 1);
+		if (header->gc != nullptr) {
+			try {
+				header->gc(payload);
+			}
+			catch (...) {
+				// errors raised during collection (e.g., from a throwing
+				// destructor) must not escape: standard Lua merely warns
+				// about errors thrown from __gc functions
+			}
+		}
+		if (header->uv_ref > 0) {
+			// release this userdata's uservalue reference, if any
+			luaL_unref(L, LUA_REGISTRYINDEX, header->uv_ref);
+			header->uv_ref = LUA_NOREF;
+		}
+	}
+} // namespace sol_luau_compat
+
+
+
+// activating a metatable is what makes a userdata "complete": promote
+// the pending destroyer recorded at allocation time. Cannot share the
+// name with Luau's real lua_setmetatable (same signature, so an inline
+// overload would be a redefinition), so wrap it behind a macro like
+// luaL_getmetatable above
+inline int sol_luau_setmetatable(lua_State* L, int object_index) {
+	int abs_index = lua_absindex(L, object_index);
+	if (lua_type(L, abs_index) == LUA_TUSERDATA && lua_userdatatag(L, abs_index) == sol_luau_compat::userdata_tag()) {
+		void* payload = lua_touserdata(L, abs_index);
+		sol_luau_compat::userdata_header* header = static_cast<sol_luau_compat::userdata_header*>(payload) - 1;
+		if (header->pending_gc != nullptr) {
+			header->gc = header->pending_gc;
+			header->pending_gc = nullptr;
+		}
+	}
+	return lua_setmetatable(L, abs_index);
 }
+#define lua_setmetatable(L, index) sol_luau_setmetatable((L), (index))
 
 // // // uservalues
 //
 // Luau keeps environments for functions and threads only: userdata have no
-// per-object environment. For those, keep values alive in a weak-keyed
-// registry table keyed by the object's address, which preserves the
-// "lives exactly as long as the owning object" semantics.
-
-inline int sol_luau_uservalue_table(lua_State* L) {
-	lua_pushlightuserdata(L, const_cast<void*>(static_cast<const void*>(&sol_luau_compat::uservalue_table_key)));
-	lua_rawget(L, LUA_REGISTRYINDEX);
-	if (lua_isnil(L, -1)) {
-		lua_pop(L, 1);
-		lua_createtable(L, 0, 0);
-		lua_createtable(L, 0, 1);
-		lua_pushliteral(L, "__mode");
-		lua_pushliteral(L, "k");
-		lua_rawset(L, -3);
-		lua_setmetatable(L, -2);
-		lua_pushlightuserdata(L, const_cast<void*>(static_cast<const void*>(&sol_luau_compat::uservalue_table_key)));
-		lua_pushvalue(L, -2);
-		lua_rawset(L, LUA_REGISTRYINDEX);
-	}
-	return lua_gettop(L);
-}
+// per-object environment. For sol2's userdata, the value is kept as a
+// registry reference stored right in the userdata's header, so it lives
+// exactly as long as the owning object (like a real uservalue would).
 
 inline int lua_getuservalue(lua_State* L, int idx) {
 	int abs_idx = lua_absindex(L, idx);
@@ -299,16 +431,18 @@ inline int lua_getuservalue(lua_State* L, int idx) {
 		lua_getfenv(L, abs_idx);
 		return lua_type(L, -1);
 	}
-	const void* p = lua_topointer(L, abs_idx);
-	if (p == nullptr) {
-		lua_pushnil(L);
-		return LUA_TNIL;
+	if (t == LUA_TUSERDATA && lua_userdatatag(L, abs_idx) == sol_luau_compat::userdata_tag()) {
+		void* p = lua_touserdata(L, abs_idx);
+		sol_luau_compat::userdata_header* header = static_cast<sol_luau_compat::userdata_header*>(p) - 1;
+		if (header->uv_ref <= 0) {
+			lua_pushnil(L);
+			return LUA_TNIL;
+		}
+		lua_rawgeti(L, LUA_REGISTRYINDEX, header->uv_ref);
+		return lua_type(L, -1);
 	}
-	int uv_table = sol_luau_uservalue_table(L);
-	lua_pushlightuserdata(L, const_cast<void*>(p));
-	lua_rawget(L, uv_table);
-	lua_remove(L, uv_table);
-	return lua_type(L, -1);
+	lua_pushnil(L);
+	return LUA_TNIL;
 }
 
 inline void lua_setuservalue(lua_State* L, int idx) {
@@ -318,16 +452,23 @@ inline void lua_setuservalue(lua_State* L, int idx) {
 		lua_setfenv(L, abs_idx);
 		return;
 	}
-	const void* p = lua_topointer(L, abs_idx);
-	if (p == nullptr) {
-		lua_pop(L, 1);
+	if (t == LUA_TUSERDATA && lua_userdatatag(L, abs_idx) == sol_luau_compat::userdata_tag()) {
+		void* p = lua_touserdata(L, abs_idx);
+		sol_luau_compat::userdata_header* header = static_cast<sol_luau_compat::userdata_header*>(p) - 1;
+		// the new value sits on top of the stack
+		if (header->uv_ref > 0) {
+			luaL_unref(L, LUA_REGISTRYINDEX, header->uv_ref);
+			header->uv_ref = LUA_NOREF;
+		}
+		if (lua_isnil(L, -1) != 0) {
+			// setting nil just clears the slot
+			lua_pop(L, 1);
+			return;
+		}
+		header->uv_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 		return;
 	}
-	int uv_table = sol_luau_uservalue_table(L);
-	lua_pushlightuserdata(L, const_cast<void*>(p));
-	lua_pushvalue(L, -3);
-	lua_rawset(L, uv_table);
-	lua_pop(L, 2);
+	lua_pop(L, 1);
 }
 
 // // // debug information
@@ -394,7 +535,17 @@ inline void lua_pushcfunction(lua_State* L, lua_CFunction fn) {
 // Luau has no way to serialize an existing closure back into bytecode
 // (bytecode is produced by the compiler from source): report failure.
 
-inline int lua_dump(lua_State*, lua_Writer, void*, int) {
+inline int lua_dump(lua_State* L, lua_Writer writer, void* data, int) {
+	// Luau cannot serialize an existing closure back into bytecode.
+	// Report failure, but honor the lua_Writer contract first: hand the
+	// writer an empty chunk so that writer-side errors propagate the
+	// same way they do on standard Lua
+	if (writer != nullptr) {
+		int writer_error = writer(L, "", 0, data);
+		if (writer_error != 0) {
+			return writer_error;
+		}
+	}
 	return 1;
 }
 
@@ -525,6 +676,65 @@ inline int lua_load(lua_State* L, lua_Reader reader, void* data, const char* chu
 		piece_size = 0;
 	}
 	return sol_luau_load(L, chunkname, buffer.data(), buffer.size(), mode);
+}
+
+// // // base library extras
+//
+// Luau's base library has neither `collectgarbage` nor a runtime `require`
+// (in Luau proper, `require` is resolved by the compiler): provide small
+// shims so code written against standard Lua keeps working. `require`
+// serves modules from the registry's `_LOADED` table, which is exactly
+// where sol2's require/require_script leave their results.
+
+inline int sol_luau_collectgarbage(lua_State* L) {
+	size_t opt_size = 0;
+	const char* opt = luaL_optlstring(L, 1, "collect", &opt_size);
+	if (opt != nullptr && opt_size == 5 && strcmp(opt, "count") == 0) {
+		lua_pushnumber(L, static_cast<lua_Number>(lua_gc(L, LUA_GCCOUNT, 0)));
+		return 1;
+	}
+	// "collect", "restart", "stop", and anything else: just run a full
+	// collection (or nothing at all), never an error. Two full cycles:
+	// sol2 keeps userdata uservalues alive through registry references
+	// that are only released while the collector sweeps their owner, so
+	// objects kept alive solely through a uservalue chain need one extra
+	// cycle to become collectible (a real uservalue would die together
+	// with its owner in a single pass)
+	lua_gc(L, LUA_GCCOLLECT, 0);
+	lua_gc(L, LUA_GCCOLLECT, 0);
+	return 0;
+}
+
+inline int sol_luau_require(lua_State* L) {
+	size_t name_size = 0;
+	const char* name = luaL_checklstring(L, 1, &name_size);
+	lua_getfield(L, LUA_REGISTRYINDEX, "_LOADED");
+	if (lua_istable(L, -1) != 0) {
+		lua_getfield(L, -1, name);
+		if (lua_isnil(L, -1) == 0) {
+			return 1;
+		}
+		lua_pop(L, 1);
+	}
+	else {
+		lua_pop(L, 1);
+	}
+	// fall back to libraries exposed as globals: this mirrors how
+	// standard Lua can require already-loaded library modules
+	lua_getglobal(L, name);
+	if (lua_isnil(L, -1) == 0) {
+		return 1;
+	}
+	return luaL_error(L,
+	     "require is not available on this Luau state: module '%s' was not preloaded through sol2 (use require_script/require)",
+	     name);
+}
+
+inline void sol_luau_open_base_extras(lua_State* L) {
+	lua_pushcfunction(L, sol_luau_collectgarbage);
+	lua_setglobal(L, "collectgarbage");
+	lua_pushcfunction(L, sol_luau_require);
+	lua_setglobal(L, "require");
 }
 
 #endif // SOL_USE_LUAU

@@ -63,6 +63,7 @@ TEST_CASE("issues/stack overflow 2", "make sure basic iterators clean up properl
 			}
 			a += 2;
 		}
+		(void)a;
 	};
 	REQUIRE_NOTHROW(fx());
 }

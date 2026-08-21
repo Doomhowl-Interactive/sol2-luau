@@ -30,7 +30,7 @@ int plop_xyz(int x, int y, std::string z) {
 	return 11;
 }
 
-TEST_CASE("tables/operator[]", "Check if operator[] retrieval and setting works properly") {
+TEST_CASE("tables/operator indexing", "Check if operator indexing retrieval and setting works properly") {
 	sol::state lua;
 	lua.open_libraries(sol::lib::base);
 
@@ -86,7 +86,7 @@ TEST_CASE("tables/operator[]", "Check if operator[] retrieval and setting works 
 	REQUIRE_NOTHROW(assert1(lua.globals()));
 }
 
-TEST_CASE("tables/operator[] valid", "Test if proxies on tables can lazily evaluate validity") {
+TEST_CASE("tables/operator indexing valid", "Test if proxies on tables can lazily evaluate validity") {
 	sol::state lua;
 	bool isFullScreen = false;
 	auto fullscreennopers = lua["fullscreen"]["nopers"];
@@ -108,7 +108,7 @@ TEST_CASE("tables/operator[] valid", "Test if proxies on tables can lazily evalu
 	REQUIRE_FALSE(isFullScreen);
 }
 
-TEST_CASE("tables/operator[] optional", "Test if proxies on tables can lazily evaluate validity") {
+TEST_CASE("tables/operator indexing optional", "Test if proxies on tables can lazily evaluate validity") {
 	sol::state lua;
 
 	sol::optional<int> test1 = lua["no_exist_yet"];

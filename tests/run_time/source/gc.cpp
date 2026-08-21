@@ -608,6 +608,7 @@ TEST_CASE("gc/multi-argument destructors", "make sure transparent arguments come
 		call_state = s;
 		return f->~transparent_foo();
 	};
+	(void)lua_state;
 	{
 		sol::state lua;
 		lua_state = lua;
@@ -616,5 +617,12 @@ TEST_CASE("gc/multi-argument destructors", "make sure transparent arguments come
 		lua.script("foo.new()");
 	}
 	REQUIRE(transparent_foos_destroyed == 1);
+#if SOL_IS_ON(SOL_USE_LUAU)
+	// on Luau, the user-supplied destructor callback cannot be invoked
+	// at collection time (see compat-luau.h): only the underlying C++
+	// object is destroyed, so call_state is never populated
+	REQUIRE(call_state == nullptr);
+#else
 	REQUIRE(call_state == lua_state);
+#endif
 }

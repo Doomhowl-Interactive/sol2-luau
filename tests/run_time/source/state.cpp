@@ -236,13 +236,17 @@ TEST_CASE("state/multi require", "make sure that requires transfers across hand-
 TEST_CASE("state/require-safety", "make sure unrelated modules aren't harmed in using requires") {
 	sol::state lua;
 	lua.open_libraries();
-	std::string t1 = lua.safe_script(R"(require 'io'
-return 'test1')");
-	sol::object ot2 = lua.require_script("test2", R"(require 'io'
-return 'test2')");
+#if SOL_IS_ON(SOL_USE_LUAU)
+	// Luau has no io library: require a real library instead
+	const char* require_target = "string";
+#else
+	const char* require_target = "io";
+#endif
+	std::string require_statement = std::string("require '") + require_target + "'\n";
+	std::string t1 = lua.safe_script(require_statement + "return 'test1'");
+	sol::object ot2 = lua.require_script("test2", require_statement + "return 'test2'");
 	std::string t2 = ot2.as<std::string>();
-	std::string t3 = lua.safe_script(R"(require 'io'
-return 'test3')");
+	std::string t3 = lua.safe_script(require_statement + "return 'test3'");
 	REQUIRE(t1 == "test1");
 	REQUIRE(t2 == "test2");
 	REQUIRE(t3 == "test3");
@@ -390,9 +394,16 @@ TEST_CASE("state/requires-reload", "ensure that reloading semantics do not cause
 	sol::state lua;
 	sol::stack_guard luasg(lua);
 	lua.open_libraries();
-	lua.safe_script("require 'io'\nreturn 'test1'");
-	lua.require_script("test2", "require 'io'\nreturn 'test2'");
-	lua.safe_script("require 'io'\nreturn 'test3'");
+#if SOL_IS_ON(SOL_USE_LUAU)
+	// Luau has no io library: require a real library instead
+	const char* require_target = "string";
+#else
+	const char* require_target = "io";
+#endif
+	std::string require_statement = std::string("require '") + require_target + "'\n";
+	lua.safe_script(require_statement + "return 'test1'");
+	lua.require_script("test2", require_statement + "return 'test2'");
+	lua.safe_script(require_statement + "return 'test3'");
 }
 
 TEST_CASE("state/script, do, and load", "test success and failure cases for loading and running scripts") {

@@ -37,21 +37,29 @@ namespace sol { namespace stack { namespace stack_detail {
 
 	inline bool maybe_push_lua_next_function(lua_State* L_) {
 		stack::get_field<true, false>(L_, "next");
-		bool is_next = stack::check<protected_function>(L_);
+		// we are looking for the actual `next` free function here:
+		// stack::check<protected_function> would also accept lua_nil,
+		// which would hand back a call-abortingly-null function later
+		bool is_next = lua_type(L_, -1) == LUA_TFUNCTION;
 		if (is_next) {
 			return true;
 		}
+		// not a function (or missing entirely): don't leave it on the stack
+		lua_pop(L_, 1);
 		stack::get_field<true, false>(L_, "table");
 		stack::record tracking{};
 		if (!stack::loose_table_check(L_, -1, &no_panic, tracking)) {
+			lua_pop(L_, 1);
 			return false;
 		}
 		lua_getfield(L_, -1, "next");
-		bool is_table_next_func = stack::check<protected_function>(L_, -1);
+		bool is_table_next_func = lua_type(L_, -1) == LUA_TFUNCTION;
 		if (is_table_next_func) {
+			// leave just the function itself on the stack for the caller
+			lua_remove(L_, -2);
 			return true;
 		}
-		lua_pop(L_, 1);
+		lua_pop(L_, 2);
 		return false;
 	}
 
