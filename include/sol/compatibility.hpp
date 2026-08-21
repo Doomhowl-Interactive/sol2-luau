@@ -32,7 +32,11 @@
 #include <sol/version.hpp>
 #include <sol/compatibility/lua_version.hpp>
 
-#if SOL_IS_ON(SOL_USE_COMPATIBILITY_LAYER)
+#if SOL_IS_ON(SOL_USE_LUAU)
+// Luau cannot work without its shims: include them regardless of
+// whether the general compatibility layer is enabled
+#include <sol/compatibility/compat-luau.h>
+#elif SOL_IS_ON(SOL_USE_COMPATIBILITY_LAYER)
 
 // clang-format off
 #if SOL_IS_ON(SOL_USING_CXX_LUA) || SOL_IS_ON(SOL_USING_CXX_LUAJIT)

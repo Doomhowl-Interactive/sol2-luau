@@ -78,10 +78,13 @@ function(find_lua_build LUA_VERSION)
 
 
 	# # # Build Lua
-	# # Select either LuaJIT or Vanilla Lua here, based on what we discover
+	# # Select either LuaJIT, Luau or Vanilla Lua here, based on what we discover
 	if (BUILD_LUAJIT OR LUA_BUILD_NORMALIZED_LUA_VERSION MATCHES "luajit")
 		include(${CMAKE_CURRENT_LIST_DIR}/FindLuaBuild/LuaJIT.cmake)
 		set(LUA_VERSION_STRING ${LUA_JIT_VERSION})
+	elseif (LUA_BUILD_NORMALIZED_LUA_VERSION MATCHES "luau")
+		include(${CMAKE_CURRENT_LIST_DIR}/FindLuaBuild/Luau.cmake)
+		set(LUA_VERSION_STRING luau-${LUAU_VERSION})
 	else()
 		include(${CMAKE_CURRENT_LIST_DIR}/FindLuaBuild/LuaVanilla.cmake)
 		set(LUA_VERSION_STRING ${LUA_VANILLA_VERSION})

@@ -28,7 +28,19 @@
 
 // clang-format off
 
-#if SOL_IS_ON(SOL_USING_CXX_LUA)
+#if defined(SOL_LUAU) && (SOL_LUAU != 0)
+	// Luau is always compiled as C++: its headers must NOT be wrapped
+	// in extern "C" or the functions will fail to link.
+	// There is no lauxlib.h in Luau: all of the auxiliary library
+	// calls live inside of lualib.h instead.
+	#if __has_include(<lua/lua.h>)
+		#include <lua/lua.h>
+		#include <lua/lualib.h>
+	#else
+		#include <lua.h>
+		#include <lualib.h>
+	#endif
+#elif SOL_IS_ON(SOL_USING_CXX_LUA)
 	#if __has_include(<lua/lua.h>)
 		#include <lua/lua.h>
 		#include <lua/lauxlib.h>
@@ -57,6 +69,21 @@
 		#endif
 	}
 #endif // C++ Mangling for Lua vs. Not
+
+// Detect Luau when the user did not tell us about it beforehand.
+// LUA_VECTOR_SIZE is defined unconditionally by Luau's luaconf.h and by
+// no other Lua implementation. If we get here without SOL_LUAU being set,
+// the headers were included with the wrong linkage and things would
+// fail in confusing ways at link-time: bail out early with instructions.
+#if !defined(SOL_LUAU) && defined(LUA_VECTOR_SIZE)
+	#error "sol2: a Luau implementation was detected (LUA_VECTOR_SIZE is defined), but SOL_LUAU was not defined. Please define SOL_LUAU=1 before including sol2 when compiling against Luau, so that the headers are included with the correct (C++) linkage."
+#endif // Luau detection
+
+#if defined(SOL_LUAU) && (SOL_LUAU != 0)
+	#define SOL_USE_LUAU_I_ SOL_ON
+#else
+	#define SOL_USE_LUAU_I_ SOL_OFF
+#endif // luau
 
 #if defined(SOL_LUAJIT)
 	#if (SOL_LUAJIT != 0)
@@ -102,6 +129,15 @@
 	#define SOL_USE_MOONJIT_I_ SOL_OFF
 #endif
 
+#if SOL_IS_ON(SOL_USE_LUAU)
+	// Luau is derived from Lua 5.1: route sol2 through the 5.1 code paths
+	// and use SOL_USE_LUAU to handle everything that deviates from it.
+	#if defined(SOL_LUA_VERSION) && (SOL_LUA_VERSION != 501)
+		#error "sol2: SOL_LUA_VERSION must be left alone (or set to 501) when compiling against Luau"
+	#endif
+	#define SOL_LUA_VERSION 501
+#endif // Luau acts like Lua 5.1
+
 #if !defined(SOL_LUA_VERSION)
 	#if defined(LUA_VERSION_NUM) && LUA_VERSION_NUM >= 502
 		#define SOL_LUA_VERSION LUA_VERSION_NUM
@@ -137,7 +173,18 @@
 		#define SOL_PROPAGATE_EXCEPTIONS_I_ SOL_OFF
 	#endif
 #else
-	#if SOL_IS_ON(SOL_USE_LUAJIT)
+	#if SOL_IS_ON(SOL_USE_LUAU)
+		#if defined(LUA_USE_LONGJMP) && (LUA_USE_LONGJMP != 0)
+			// longjmp-based error handling means exceptions cannot
+			// safely propagate through the VM
+			#define SOL_PROPAGATE_EXCEPTIONS_I_ SOL_DEFAULT_OFF
+		#else
+			// Luau is built with C++ exception handling by default and
+			// converts std::exception thrown from embedder code into
+			// proper, catchable Lua errors, so propagation is safe.
+			#define SOL_PROPAGATE_EXCEPTIONS_I_ SOL_DEFAULT_ON
+		#endif
+	#elif SOL_IS_ON(SOL_USE_LUAJIT)
 		#if SOL_USE(SOL_LUAJIT_VERSION) >= 20100
 			// LuaJIT 2.1.0-beta3 and better have exception support locked in for all platforms (mostly)
 			#define SOL_PROPAGATE_EXCEPTIONS_I_ SOL_DEFAULT_ON
@@ -166,7 +213,11 @@
 		#define SOL_EXCEPTIONS_CATCH_ALL_I_ SOL_OFF
 	#endif
 #else
-	#if SOL_IS_ON(SOL_USE_LUAJIT) || SOL_IS_ON(SOL_USING_CXX_LUAJIT)
+	#if SOL_IS_ON(SOL_USE_LUAU)
+		// Luau is C++ and uses C++ exceptions itself: it is irresponsible
+		// to "catch all" in this setting, just like C++ builds of Lua.
+		#define SOL_EXCEPTIONS_CATCH_ALL_I_ SOL_DEFAULT_OFF
+	#elif SOL_IS_ON(SOL_USE_LUAJIT) || SOL_IS_ON(SOL_USING_CXX_LUAJIT)
 		#define SOL_EXCEPTIONS_CATCH_ALL_I_ SOL_DEFAULT_OFF
 	#elif SOL_IS_ON(SOL_USING_CXX_LUA)
 		// C++ builds of Lua will throw an exception to implement its `yield` behavior;
@@ -215,7 +266,10 @@
 #else
 	// Lua 5.2 only (deprecated in 5.3 (503)) (Can be turned on with Compat flags)
 	// Lua 5.2, or other versions of Lua with the compat flag, or Lua that is not 5.2 with the specific define (5.4.1 either removed it entirely or broke it)
-	#if (SOL_LUA_VERSION_I_ == 502)
+	#if SOL_IS_ON(SOL_USE_LUAU)
+		// Luau ships bit32 as a standard library
+		#define SOL_LUA_BIT32_LIB_I_ SOL_ON
+	#elif (SOL_LUA_VERSION_I_ == 502)
 		#define SOL_LUA_BIT32_LIB_I_ SOL_ON
 	#elif defined(LUA_COMPAT_BITLIB)
 		#define SOL_LUA_BIT32_LIB_I_ SOL_ON

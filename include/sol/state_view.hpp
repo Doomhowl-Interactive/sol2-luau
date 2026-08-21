@@ -129,6 +129,55 @@ namespace sol {
 
 				for (auto&& library : libraries) {
 					switch (library) {
+#if SOL_IS_ON(SOL_USE_LUAU)
+					// Luau: no package, io, ffi, or jit libraries exist;
+					// requests for them are silently ignored
+					case lib::package:
+					case lib::io:
+					case lib::ffi:
+					case lib::jit:
+						break;
+					case lib::base:
+						luaL_requiref(L, "base", luaopen_base, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::coroutine:
+						luaL_requiref(L, "coroutine", luaopen_coroutine, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::string:
+						luaL_requiref(L, "string", luaopen_string, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::table:
+						luaL_requiref(L, "table", luaopen_table, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::math:
+						luaL_requiref(L, "math", luaopen_math, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::bit32:
+						luaL_requiref(L, "bit32", luaopen_bit32, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::os:
+						luaL_requiref(L, "os", luaopen_os, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::debug:
+						luaL_requiref(L, "debug", luaopen_debug, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::utf8:
+						luaL_requiref(L, "utf8", luaopen_utf8, 1);
+						lua_pop(L, 1);
+						break;
+					case lib::count:
+					default:
+						break;
+					}
+#else
 #if SOL_LUA_VERSION_I_ <= 501 && SOL_IS_ON(SOL_USE_LUAJIT)
 					case lib::coroutine:
 #endif // luajit opens coroutine base stuff
@@ -204,10 +253,10 @@ namespace sol {
 					default:
 						break;
 					}
+#endif // Luau vs. every other Lua implementation
 				}
 			}
 		}
-
 		object require(const std::string& key, lua_CFunction open_function, bool create_global = true) {
 			luaL_requiref(L, key.c_str(), open_function, create_global ? 1 : 0);
 			return stack::pop<object>(L);
@@ -709,6 +758,11 @@ namespace sol {
 			else if (old_mode == LUA_GCINC) {
 				return gc_mode::incremental;
 			}
+#elif SOL_IS_ON(SOL_USE_LUAU)
+			// Luau has no "pause" parameter: tune the step multiplier only
+			(void)pause;
+			lua_gc(lua_state(), LUA_GCSETSTEPMUL, step_multiplier);
+			(void)step_byte_size; // means nothing here
 #else
 			lua_gc(lua_state(), LUA_GCSETPAUSE, pause);
 			lua_gc(lua_state(), LUA_GCSETSTEPMUL, step_multiplier);

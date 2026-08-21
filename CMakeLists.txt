@@ -42,7 +42,7 @@ include(FetchContent)
 
 # # # Configuration
 # # Cached defines, strings, paths and options
-set(SOL2_LUA_VERSION "5.4.4" CACHE STRING "The version of Lua needed. Can be 5.1, 5.2, 5.3, 5.4, LuaJIT, or a more specific 3-part version number for a specifc Lua (e.g., 5.4.4 or luajit-2.0.5)")
+set(SOL2_LUA_VERSION "5.4.4" CACHE STRING "The version of Lua needed. Can be 5.1, 5.2, 5.3, 5.4, LuaJIT, Luau, or a more specific 3-part version number for a specifc Lua (e.g., 5.4.4 or luajit-2.0.5)")
 set(SOL2_BUILD_LUA TRUE CACHE BOOL "Always build Lua, do not search for it in the system")
 set(SOL2_PLATFORM "x64" CACHE STRING "Target platform to compile for when building binaries (x86, x64)")
 option(SOL2_CI "Whether or not we are in continguous integration mode" OFF)
@@ -245,6 +245,9 @@ if (sol2-is-top-level-project)
 		elseif(NORMALIZED_LUA_VERSION MATCHES "luajit")
 			set(CREATE_LUALIB_TARGET TRUE)
 			find_package(LuaJIT REQUIRED)
+		elseif(NORMALIZED_LUA_VERSION MATCHES "luau")
+			set(CREATE_LUALIB_TARGET TRUE)
+			find_package(LuaBuild ${SOL2_LUA_VERSION} REQUIRED)
 		else()
 			find_package(LuaBuild ${SOL2_LUA_VERSION} REQUIRED)
 		endif()

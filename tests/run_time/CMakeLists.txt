@@ -22,6 +22,8 @@
 
 # # # # sol2 tests - runtime tests
 
+option(SOL2_BROKEN_TESTS "Enable build of the run_time test suite" ON)
+
 if (SOL2_BROKEN_TESTS)
 
 	file(GLOB sources
